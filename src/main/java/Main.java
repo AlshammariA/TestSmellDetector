@@ -7,6 +7,7 @@ import testsmell.AbstractSmell;
 import testsmell.ResultsWriter;
 import testsmell.TestFile;
 import testsmell.TestSmellDetector;
+import testsmell.SmellyElement;
 
 import java.io.*;
 import java.nio.charset.Charset;
@@ -39,19 +40,48 @@ public class Main {
             }
         }
 
-
         String workingDir = args[0];
 
-        getAllRevisions(workingDir);
+        /*
+          Initialize the output file - Create the output file and add the column names
+         */
+        TestSmellDetector testSmellDetector = TestSmellDetector.createTestSmellDetector();
+        ResultsWriter resultsWriter = ResultsWriter.createResultsWriter();
+        List<String> columnNames;
 
-//        List<Path> testFiles = findTestFiles(workingDir);
+        columnNames = testSmellDetector.getTestSmellNames();
+        columnNames.add(0, "App");
+        //columnNames.add(1, "Version");
+        columnNames.add(1, "TestFilePath");
+        columnNames.add(2, "ProductionFilePath");
+        columnNames.add(3, "version");
+        //columnNames.add(4, "RelativeTestFilePath");
+        //columnNames.add(5, "RelativeProductionFilePath");
+        columnNames.add(4, "MethodName");
 
-//        detectSmells(workingDir);
+        resultsWriter.writeColumnName(columnNames);
+        ArrayList<String> allRevisions = getAllRevisions(workingDir);
+        FileRepositoryBuilder builder = new FileRepositoryBuilder();
+        Repository repo = builder.setGitDir(new File(workingDir+"/.git")).setMustExist(true).build();
+        Git git = new Git(repo);
+        for(String rev : allRevisions) {
+            try {
+                git.checkout().setName( rev ).call();
+                System.out.println("Checked Out: "+ rev);
+                List<Path> testFiles = findTestFiles(workingDir);
+                for (Path path : testFiles) {
+                    System.out.println("path: " + path.toString());
+                    detectSmells(path.toString(), rev, testSmellDetector, resultsWriter);
+                }
 
+            } catch (GitAPIException e) {
+                e.printStackTrace();
+            }
+        }
         System.out.println("end");
     }
 
-    private static void getAllRevisions(String workingDir) {
+    private static ArrayList<String>  getAllRevisions(String workingDir) {
         ArrayList<String> allRevisions = new ArrayList<>();
         FileRepositoryBuilder builder = new FileRepositoryBuilder();
         Repository repo = null;
@@ -75,7 +105,8 @@ public class Main {
             e.printStackTrace();
         }
 
-        for (String rev: allRevisions) {
+        return allRevisions;
+        /*for (String rev: allRevisions) {
             try {
                 git.checkout().setName( rev ).call();
                 System.out.println("Checked Out: "+ rev);
@@ -83,10 +114,7 @@ public class Main {
                 e.printStackTrace();
             }
 
-        }
-
-
-
+        }*/
     }
 
     //find all files with an @test annotation
@@ -94,8 +122,8 @@ public class Main {
         List<Path> filesList = null;
         try {
             filesList = Files.walk(Paths.get(workingDir))
-                    .filter(p -> p.toString().endsWith(".java"))
-                    .filter(f -> {
+                    .filter(p -> p.toString().endsWith("Test.java"))
+                    /*.filter(f -> {
                         Charset charset = Charset.forName("US-ASCII");
                         try (BufferedReader reader = Files.newBufferedReader(f, charset)) {
                             String line = null;
@@ -108,7 +136,7 @@ public class Main {
                         } catch (IOException x) {
                             System.err.format("IOException: %s%n", x);
                         }
-                    return false;})
+                    return false;})*/
                 .collect(Collectors.toList());
 //                    .forEach(System.out::println);
         } catch (IOException e) {
@@ -118,83 +146,67 @@ public class Main {
         return filesList;
     }
 
-    private static void detectSmells(String arg) throws IOException {
-        TestSmellDetector testSmellDetector = TestSmellDetector.createTestSmellDetector();
-
-        /*
-          Read the input file and build the TestFile objects
-         */
-        BufferedReader in = new BufferedReader(new FileReader(arg));
-        String str;
-
-        String[] lineItem;
-        TestFile testFile;
-        List<TestFile> testFiles = new ArrayList<>();
-        while ((str = in.readLine()) != null) {
-            // use comma as separator
-            lineItem = str.split(",");
-
-            //check if the test file has an associated production file
-            if(lineItem.length ==2){
-                testFile = new TestFile(lineItem[0], lineItem[1], "");
-            }
-            else{
-                testFile = new TestFile(lineItem[0], lineItem[1], lineItem[2]);
-            }
-
-            testFiles.add(testFile);
-        }
-
-        /*
-          Initialize the output file - Create the output file and add the column names
-         */
-        ResultsWriter resultsWriter = ResultsWriter.createResultsWriter();
-        List<String> columnNames;
+    private static void detectSmells(String path, String version, TestSmellDetector testSmellDetector, ResultsWriter resultsWriter) throws IOException {
+        //TestSmellDetector testSmellDetector = TestSmellDetector.createTestSmellDetector();
         List<String> columnValues;
 
-        columnNames = testSmellDetector.getTestSmellNames();
-        columnNames.add(0, "App");
-        columnNames.add(1, "Version");
-        columnNames.add(2, "TestFilePath");
-        columnNames.add(3, "ProductionFilePath");
-        columnNames.add(4, "RelativeTestFilePath");
-        columnNames.add(5, "RelativeProductionFilePath");
-
-        resultsWriter.writeColumnName(columnNames);
-
+        TestFile testFile = new TestFile("Ninja", path, "");
         /*
           Iterate through all test files to detect smells and then write the output
         */
         TestFile tempFile;
         DateFormat dateFormat = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss");
         Date date;
-        for (TestFile file : testFiles) {
-            date = new Date();
-            System.out.println(dateFormat.format(date) + " Processing: "+file.getTestFilePath());
-            System.out.println("Processing: "+file.getTestFilePath());
+        date = new Date();
+        System.out.println(dateFormat.format(date) + " Processing: "+testFile.getTestFilePath());
+        System.out.println("Processing: "+testFile.getTestFilePath());
 
-            //detect smells
-            tempFile = testSmellDetector.detectSmells(file);
-
-            //write output
+        //detect smells
+        try {
+            tempFile = testSmellDetector.detectSmells(testFile);
+        } catch(Exception e) {
+            return;
+        }
+        List<AbstractSmell> smells = tempFile.getTestSmells();
+        List<SmellyElement> elements = smells.get(0).getSmellyElements();
+        for (SmellyElement el : elements) {
             columnValues = new ArrayList<>();
-            columnValues.add(file.getApp());
-            columnValues.add(file.getTagName());
-            columnValues.add(file.getTestFilePath());
-            columnValues.add(file.getProductionFilePath());
-            columnValues.add(file.getRelativeTestFilePath());
-            columnValues.add(file.getRelativeProductionFilePath());
-            for (AbstractSmell smell : tempFile.getTestSmells()) {
-                try {
-                    columnValues.add(String.valueOf(smell.getHasSmell()));
-                }
-                catch (NullPointerException e){
+            columnValues.add(testFile.getApp());
+            //columnValues.add(file.getTagName());
+            columnValues.add(testFile.getTestFilePath());
+            columnValues.add(testFile.getProductionFilePath());
+            columnValues.add(version);
+            //columnValues.add(file.getRelativeTestFilePath());
+            //columnValues.add(file.getRelativeProductionFilePath());
+            columnValues.add(el.getElementName());
+            for(AbstractSmell smell : smells) {
+                if(smell == null) {
                     columnValues.add("");
+                    continue;
+                }
+                List<SmellyElement> elements2 = smell.getSmellyElements();
+                if(elements2.size() == 0) {
+                    try{
+                        columnValues.add(String.valueOf(false));
+                    }
+                    catch (NullPointerException e) {
+                        columnValues.add("");
+                    }
+                    continue;
+                }
+                for(SmellyElement el2 : elements2) {
+                    if(el2.getElementName().equals(el.getElementName())) {
+                        try{
+                            columnValues.add(String.valueOf(el2.getHasSmell()));
+                        }
+                        catch (NullPointerException e) {
+                            columnValues.add("");
+                        }
+                        break;
+                    }
                 }
             }
             resultsWriter.writeLine(columnValues);
         }
     }
-
-
 }
